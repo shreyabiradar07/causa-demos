@@ -82,6 +82,10 @@ trap '_demo_exit_trap' INT TERM
 # Defaults
 # ---------------------------------------------------------------------------
 NAMESPACE="causa-rca"
+# Whether the user set the target (env or --target). If not, terminate derives it
+# from the current kubectl context instead of defaulting to kind.
+_TARGET_EXPLICIT=false
+[[ -n "${TARGET:-}" ]] && _TARGET_EXPLICIT=true
 TARGET="${TARGET:-kind}"
 SKILL_PATH=""
 TERMINATE=false
@@ -229,7 +233,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --target)
             [[ -z "${2:-}" ]] && { echo "ERROR: value required for --target" >&2; exit 1; }
-            TARGET="$2"; shift 2 ;;
+            TARGET="$2"; _TARGET_EXPLICIT=true; shift 2 ;;
         -n)
             [[ -z "${2:-}" ]] && { echo "ERROR: value required for -n" >&2; exit 1; }
             NAMESPACE="$2"; shift 2 ;;
@@ -367,6 +371,42 @@ PYEOF
 # Terminate mode
 # ---------------------------------------------------------------------------
 if [[ "$TERMINATE" == "true" ]]; then
+    # Current context drives target detection below and is restored on exit.
+    _ORIG_KUBE_CONTEXT="$(kubectl config current-context 2>/dev/null || true)"
+
+    # No context → no cluster to act on. Stop before touching anything.
+    if [[ -z "$_ORIG_KUBE_CONTEXT" ]]; then
+        log_error "No kubectl context is set — nothing to tear down."
+        log_error "  Set a context and re-run: kubectl config use-context <ctx>"
+        exit 1
+    fi
+
+    # Restore the context on exit — the installer's kind uninstall switches it.
+    _restore_kube_context() {
+        local _cur
+        _cur="$(kubectl config current-context 2>/dev/null || true)"
+        if [[ -n "$_ORIG_KUBE_CONTEXT" && "$_cur" != "$_ORIG_KUBE_CONTEXT" ]]; then
+            if kubectl config use-context "$_ORIG_KUBE_CONTEXT" >>"$LOG_FILE" 2>&1; then
+                write_to_log_file "INFO" "Restored kubectl context to '$_ORIG_KUBE_CONTEXT' after terminate"
+            else
+                write_to_log_file "WARN" "Could not restore kubectl context to '$_ORIG_KUBE_CONTEXT' — set it manually with: kubectl config use-context '$_ORIG_KUBE_CONTEXT'"
+            fi
+        fi
+    }
+    trap '_restore_kube_context' EXIT
+
+    # No --target: detect from the cluster — OpenShift serves route.openshift.io,
+    # anything else is treated as kind.
+    if [[ "$_TARGET_EXPLICIT" == "false" ]]; then
+        if kubectl get --request-timeout=10s --raw /apis/route.openshift.io >/dev/null 2>/dev/null; then
+            TARGET="openshift"
+            log_file_only "OpenShift detected on context '$_ORIG_KUBE_CONTEXT' — tearing down as openshift (pass --target to override)"
+        else
+            TARGET="kind"
+            log_file_only "No OpenShift API on context '$_ORIG_KUBE_CONTEXT' — tearing down as kind (pass --target to override)"
+        fi
+    fi
+
     # For openshift, decide what to clean up based on the cluster probe. The
     # script can only tell whether the cluster is reachable, not why it isn't:
     #   rc 2 (reachable but NOT OpenShift, e.g. a live kind context) → a wrong

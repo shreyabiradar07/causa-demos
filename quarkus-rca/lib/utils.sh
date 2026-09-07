@@ -83,6 +83,18 @@ check_cluster_reachability() {
     local _ctx
     _ctx=$(kubectl config current-context 2>/dev/null || true)
     write_to_log_file "INFO" "Current kubeconfig context: ${_ctx:-<none>}"
+    # No context → kubectl blocks on localhost:8080 until timeout. Fail fast.
+    if [[ -z "$_ctx" ]]; then
+        log_error "No current kubeconfig context is set."
+        log_error "Set one before running:"
+        if [[ "$_target" == "openshift" ]]; then
+            log_error "    oc login <api-url> --token=<token>"
+            log_error "    kubectl config current-context   # confirm it is the OpenShift cluster"
+        else
+            log_error "    kubectl config use-context <context>   # or 'kind create cluster' for a kind target"
+        fi
+        return 1
+    fi
     # --request-timeout bounds the probe so a bad context fails fast (~10s).
     if ! kubectl cluster-info --request-timeout=10s >>"$LOG_FILE" 2>&1; then
         log_error "Kubernetes API server is not reachable."
