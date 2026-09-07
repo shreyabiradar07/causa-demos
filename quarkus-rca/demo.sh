@@ -367,20 +367,36 @@ PYEOF
 # Terminate mode
 # ---------------------------------------------------------------------------
 if [[ "$TERMINATE" == "true" ]]; then
-    # For openshift, confirm we are on an OpenShift cluster before deleting —
-    # a stale kind context would otherwise run cleanup against the wrong cluster.
-    if [[ "$TARGET" == "openshift" ]] && ! check_cluster_reachability "$TARGET"; then
-        exit 1
+    # For openshift, decide what to clean up based on the cluster probe. The
+    # script can only tell whether the cluster is reachable, not why it isn't:
+    #   rc 2 (reachable but NOT OpenShift, e.g. a live kind context) → a wrong
+    #        live cluster is present; abort and touch nothing, as no teardown was
+    #        intended against it.
+    #   rc 1 (nothing reachable) → platform cannot be verified, but there is no
+    #        live cluster to act on wrongly, so skip cluster-side teardown and
+    #        run only the local MCP-config cleanup below (needs no cluster).
+    #   rc 0 → reachable and confirmed OpenShift; full cleanup.
+    _SKIP_CLUSTER_CLEANUP=false
+    if [[ "$TARGET" == "openshift" ]]; then
+        check_cluster_reachability "$TARGET"; _reach_rc=$?
+        if [[ $_reach_rc -eq 2 ]]; then
+            exit 1
+        elif [[ $_reach_rc -ne 0 ]]; then
+            _SKIP_CLUSTER_CLEANUP=true
+            log_file_only "Cluster not reachable — skipping cluster-side teardown; running local MCP-config cleanup only."
+        fi
     fi
 
-    # Stop the port-forward tunnels started by a previous run — kind only, as
-    # tunnels are never started for other targets (openshift uses a Route).
-    if [[ "$TARGET" == "kind" ]]; then
-        stop_port_forwards "$PORTFORWARD_PID_FILE" \
-            "$CAUSA_BACKEND_LOCAL_PORT" "$CAUSA_MCP_LOCAL_PORT"
-    fi
+    if [[ "$_SKIP_CLUSTER_CLEANUP" == "false" ]]; then
+        # Stop the port-forward tunnels started by a previous run — kind only, as
+        # tunnels are never started for other targets (openshift uses a Route).
+        if [[ "$TARGET" == "kind" ]]; then
+            stop_port_forwards "$PORTFORWARD_PID_FILE" \
+                "$CAUSA_BACKEND_LOCAL_PORT" "$CAUSA_MCP_LOCAL_PORT"
+        fi
 
-    terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER" "$DELETE_CLUSTER" "$TARGET"
+        terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER" "$DELETE_CLUSTER" "$TARGET"
+    fi
 
     # Remove causa-rca from all global MCP config files that exist.
     # Only the causa-rca key is removed — all other servers are preserved.

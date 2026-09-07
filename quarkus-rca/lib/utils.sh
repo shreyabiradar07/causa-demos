@@ -69,6 +69,11 @@ check_prerequisites() {
 }
 
 # check_cluster_reachability
+# Return codes:
+#   0 — cluster reachable (and, for openshift, confirmed to be OpenShift)
+#   1 — cluster API not reachable (reason unknowable: down, deleted, bad
+#       kubeconfig, or a stale context pointing at a gone cluster)
+#   2 — reachable but wrong platform for openshift target (e.g. a live kind context)
 # Verifies the Kubernetes API server is reachable before deployment starts.
 # Prints a clear error and returns non-zero when the cluster is not available.
 check_cluster_reachability() {
@@ -102,7 +107,7 @@ check_cluster_reachability() {
             log_error "  Switch to your OpenShift cluster first:"
             log_error "    oc login <api-url> --token=<token>"
             log_error "    kubectl config current-context   # confirm it is the OpenShift cluster"
-            return 1
+            return 2
         fi
         log_file_only "OpenShift API detected (route.openshift.io) on context: ${_ctx:-<none>}"
     fi
