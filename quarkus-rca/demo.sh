@@ -395,15 +395,25 @@ if [[ "$TERMINATE" == "true" ]]; then
     }
     trap '_restore_kube_context' EXIT
 
-    # No --target: detect from the cluster — OpenShift serves route.openshift.io,
-    # anything else is treated as kind.
+    # No --target: detect from the cluster. Verify reachability, then classify
+    # positively (openshift = route.openshift.io, kind = 'kind-*' context) and
+    # abort on anything else rather than guessing and tearing down the wrong cluster.
     if [[ "$_TARGET_EXPLICIT" == "false" ]]; then
+        if ! kubectl cluster-info --request-timeout=10s >>"$LOG_FILE" 2>&1; then
+            log_error "Context '$_ORIG_KUBE_CONTEXT' is not reachable — cannot determine the platform to tear down."
+            log_error "  Fix the context or pass --target explicitly, then re-run."
+            exit 1
+        fi
         if kubectl get --request-timeout=10s --raw /apis/route.openshift.io >/dev/null 2>/dev/null; then
             TARGET="openshift"
             log_file_only "OpenShift detected on context '$_ORIG_KUBE_CONTEXT' — tearing down as openshift (pass --target to override)"
-        else
+        elif [[ "$_ORIG_KUBE_CONTEXT" == kind-* ]]; then
             TARGET="kind"
-            log_file_only "No OpenShift API on context '$_ORIG_KUBE_CONTEXT' — tearing down as kind (pass --target to override)"
+            log_file_only "kind context '$_ORIG_KUBE_CONTEXT' — tearing down as kind (pass --target to override)"
+        else
+            log_error "Context '$_ORIG_KUBE_CONTEXT' is reachable but is neither OpenShift nor a kind cluster."
+            log_error "  Refusing to guess the platform — pass --target explicitly, then re-run."
+            exit 1
         fi
     fi
 
